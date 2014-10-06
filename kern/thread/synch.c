@@ -174,6 +174,7 @@ lock_create(const char *name)
 
     spinlock_init(&lock->spin_lock);
     lock->lk_holder = NULL;
+    lock->lock_count = 1;
     
     return lock;
 }
@@ -196,11 +197,11 @@ void
 lock_acquire(struct lock *lock)
 {
         // Write this
-
+    KASSERT(lock != NULL);
     KASSERT(curthread->t_in_interrupt == false);
 
     spinlock_acquire(&lock->spin_lock);
-    while (!lock_do_i_hold(lock)) {
+    while (lock->lock_count == 0) {
 
         wchan_lock(lock->lock_wchan);
         spinlock_release(&lock->spin_lock);
@@ -208,6 +209,8 @@ lock_acquire(struct lock *lock)
 
         spinlock_acquire(&lock->spin_lock);
     }
+    KASSERT(lock->lock_count > 0);
+    lock->lock_count--;
     lock->lk_holder = curthread;
     spinlock_release(&lock->spin_lock);
         
@@ -218,8 +221,10 @@ void
 lock_release(struct lock *lock)
 {
         // Write this
-
+    KASSERT(lock != NULL);
     spinlock_acquire(&lock->spin_lock);
+    lock->lock_count++;
+    KASSERT(lock->lock_count > 0);
     lock->lk_holder = NULL;
     wchan_wakeone(lock->lock_wchan);
     spinlock_release(&lock->spin_lock);
@@ -235,7 +240,7 @@ lock_do_i_hold(struct lock *lock)
 
         //(void)lock;  // suppress warning until code gets written
 
-    return (lock->lk_holder == curthread || lock->lk_holder == NULL);
+    return (lock->lk_holder == curthread);
 }
 
 ////////////////////////////////////////////////////////////
@@ -287,9 +292,8 @@ cv_wait(struct cv *cv, struct lock *lock)
         // Write this
     wchan_lock(cv->cv_wchan);
     lock_release(lock);
-
     wchan_sleep(cv->cv_wchan);
-
+    lock_acquire(lock);
         //(void)cv;    // suppress warning until code gets written
         //(void)lock;  // suppress warning until code gets written
 }
@@ -298,20 +302,16 @@ void
 cv_signal(struct cv *cv, struct lock *lock)
 {
         // Write this
-	
     wchan_wakeone(cv->cv_wchan);
-    lock_acquire(lock);
     //(void)cv;    // suppress warning until code gets written
-	//(void)lock;  // suppress warning until code gets written
+	(void)lock;  // suppress warning until code gets written
 }
 
 void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
 	// Write this
-	
     wchan_wakeall(cv->cv_wchan);
-    lock_acquire(lock);
     //(void)cv;    // suppress warning until code gets written
-	//(void)lock;  // suppress warning until code gets written
+	(void)lock;  // suppress warning until code gets written
 }

@@ -19,8 +19,32 @@
 /*
  * replace this with declarations of any synchronization and other variables you need here
  */
-static struct semaphore *globalCatMouseSem;
+//static struct semaphore *globalCatMouseSem;
+volatile int *bowl_arr;
+struct lock **bowl_locks;
+struct cv **bowl_cvs;
+int num_bowls = 0;
 
+bool miceStillEating(void);
+bool catsStillEating(void);
+
+
+bool miceStillEating(){
+  for (int i = 0; i < num_bowls; ++i){
+    if(bowl_arr[i] == 1){
+      return true;
+    }
+  }
+  return false;
+}
+bool catsStillEating(){
+  for (int i = 0; i < num_bowls; ++i){
+    if(bowl_arr[i] == 0){
+      return true;
+    }
+  }
+  return false;
+}
 
 /* 
  * The CatMouse simulation will call this function once before any cat or
@@ -34,12 +58,40 @@ void
 catmouse_sync_init(int bowls)
 {
   /* replace this default implementation with your own implementation of catmouse_sync_init */
+  num_bowls = bowls;
 
-  (void)bowls; /* keep the compiler from complaining about unused parameters */
-  globalCatMouseSem = sem_create("globalCatMouseSem",1);
-  if (globalCatMouseSem == NULL) {
-    panic("could not create global CatMouse synchronization semaphore");
+  bowl_arr = kmalloc(bowls*sizeof(int));
+  if (bowl_arr == NULL) {
+    panic("initialize_bowl_arr: unable to allocate space for %d bowl_arr\n",bowls);
   }
+  for(int i=0;i<bowls;i++) {
+    bowl_arr[i] = -1;
+  }
+
+  bowl_locks = kmalloc(bowls*sizeof(struct lock *));
+  if(bowl_locks == NULL){
+    panic("initialize_bowl_locks: unable to allocate space for %d bowl_locks\n",bowls);
+  }
+  for (int i = 0; i < bowls; i++){
+    bowl_locks[i] = lock_create("bowl");
+  }
+
+  bowl_cvs = kmalloc(bowls*sizeof(struct cv *));
+  if(bowl_cvs == NULL){
+    panic("initialize_bowl_cvs: unable to allocate space for %d bowl_cvs\n",bowls);
+  }
+  for (int i = 0; i < bowls; i++){
+    bowl_cvs[i] = cv_create("bowl");
+  }
+
+  //cat_eating_cv = cv_create("cat cv");
+
+  //(void)bowls;
+  // globalCatMouseSem = sem_create("globalCatMouseSem",1);
+  // if (globalCatMouseSem == NULL) {
+  //   panic("could not create global CatMouse synchronization semaphore");
+  // }
+  kprintf("Finished the catmouse sync init\n");
   return;
 }
 
@@ -55,9 +107,24 @@ void
 catmouse_sync_cleanup(int bowls)
 {
   /* replace this default implementation with your own implementation of catmouse_sync_cleanup */
-  (void)bowls; /* keep the compiler from complaining about unused parameters */
-  KASSERT(globalCatMouseSem != NULL);
-  sem_destroy(globalCatMouseSem);
+  //(void)bowls;
+  //KASSERT(globalCatMouseSem != NULL);
+  //sem_destroy(globalCatMouseSem);
+
+  if(bowl_arr != NULL)
+    kfree( (void *) bowl_arr);
+
+  for (int i = 0; i < bowls; ++i){
+    lock_destroy(bowl_locks[i]);
+  }
+  for (int i = 0; i < bowls; ++i){
+    cv_destroy(bowl_cvs[i]);
+  }
+  kfree(bowl_locks);
+  kfree(bowl_cvs);
+  
+  //cv_destroy(cat_eating_cv);
+  num_bowls = 0;
 }
 
 
@@ -77,9 +144,17 @@ void
 cat_before_eating(unsigned int bowl) 
 {
   /* replace this default implementation with your own implementation of cat_before_eating */
-  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
-  KASSERT(globalCatMouseSem != NULL);
-  P(globalCatMouseSem);
+  //(void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  //KASSERT(globalCatMouseSem != NULL);
+  //P(globalCatMouseSem);
+  lock_acquire(bowl_locks[bowl]);
+  kprintf("Cat got lock: %d\n", bowl);
+  while(miceStillEating() && bowl_arr[bowl] != -1){
+    cv_wait(bowl_cvs[bowl], bowl_locks[bowl]);
+  }
+  bowl_arr[bowl] = 0;
+  kprintf("Cat eating bowl: %d\n", bowl);
+  
 }
 
 /*
@@ -99,9 +174,14 @@ void
 cat_after_eating(unsigned int bowl) 
 {
   /* replace this default implementation with your own implementation of cat_after_eating */
-  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
-  KASSERT(globalCatMouseSem != NULL);
-  V(globalCatMouseSem);
+  //(void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  //KASSERT(globalCatMouseSem != NULL);
+  //V(globalCatMouseSem);
+
+  cv_signal(bowl_cvs[bowl], bowl_locks[bowl]);
+  bowl_arr[bowl] = -1;
+  lock_release(bowl_locks[bowl]);
+  kprintf("Cat finished bowl: %d\n", bowl);
 }
 
 /*
@@ -120,9 +200,16 @@ void
 mouse_before_eating(unsigned int bowl) 
 {
   /* replace this default implementation with your own implementation of mouse_before_eating */
-  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
-  KASSERT(globalCatMouseSem != NULL);
-  P(globalCatMouseSem);
+  //(void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  //KASSERT(globalCatMouseSem != NULL);
+  //P(globalCatMouseSem);
+  lock_acquire(bowl_locks[bowl]);
+  kprintf("Mouse got lock: %d\n", bowl);
+  while(catsStillEating() && bowl_arr[bowl] != -1){
+    cv_wait(bowl_cvs[bowl], bowl_locks[bowl]);
+  }
+  bowl_arr[bowl] = 1;
+  kprintf("Mouse eating bowl: %d\n", bowl);
 }
 
 /*
@@ -142,7 +229,12 @@ void
 mouse_after_eating(unsigned int bowl) 
 {
   /* replace this default implementation with your own implementation of mouse_after_eating */
-  (void)bowl;  /* keep the compiler from complaining about an unused parameter */
-  KASSERT(globalCatMouseSem != NULL);
-  V(globalCatMouseSem);
+  //(void)bowl;  /* keep the compiler from complaining about an unused parameter */
+  //KASSERT(globalCatMouseSem != NULL);
+  //V(globalCatMouseSem);
+  lock_acquire(bowl_locks[bowl]);
+  cv_signal(bowl_cvs[bowl], bowl_locks[bowl]);
+  bowl_arr[bowl] = -1;
+  lock_release(bowl_locks[bowl]);
+  kprintf("Mouse finish bowl: %d\n", bowl);
 }

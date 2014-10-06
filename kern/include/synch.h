@@ -78,6 +78,7 @@ struct lock {
         struct wchan *lock_wchan;
         struct spinlock spin_lock;
         struct thread *lk_holder;
+        volatile int lock_count;
         // add what you need here
         // (don't forget to mark things volatile as needed)
 };

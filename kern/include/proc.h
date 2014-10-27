@@ -49,7 +49,7 @@ struct semaphore;
  * Process structure.
  */
 struct proc {
-	char *p_name;			/* Name of this process */
+  char *p_name;			/* Name of this process */
 	struct spinlock p_lock;		/* Lock for this structure */
 	struct threadarray p_threads;	/* Threads in this process */
 
@@ -69,6 +69,7 @@ struct proc {
 #endif
 
 	/* add more material here as needed */
+    pid_t pid;
 };
 
 /* This is the process structure for the kernel and for kernel-only threads. */
@@ -78,6 +79,20 @@ extern struct proc *kproc;
 #ifdef UW
 extern struct semaphore *no_proc_sem;
 #endif // UW
+
+extern struct lock *pid_lock;
+
+struct procData{
+  pid_t parent;
+  int exitcode;
+  struct cv *cv;
+  pid_t pid;
+};
+
+int generatePid(struct proc *p);
+void generatePidForAdam(void);
+struct procData * getProcData(pid_t p);
+void cleanUpPids(void);
 
 /* Call once during system startup to allocate data structures. */
 void proc_bootstrap(void);

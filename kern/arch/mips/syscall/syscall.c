@@ -35,7 +35,7 @@
 #include <thread.h>
 #include <current.h>
 #include <syscall.h>
-
+#include <addrspace.h>
 
 /*
  * System call dispatcher.
@@ -129,6 +129,10 @@ syscall(struct trapframe *tf)
 			    (int)tf->tf_a2,
 			    (pid_t *)&retval);
 	  break;
+	case SYS_fork:
+		err = sys_fork(tf, (pid_t *)&retval);
+		break;
+
 #endif // UW
 
 	    /* Add stuff here */
@@ -177,7 +181,18 @@ syscall(struct trapframe *tf)
  * Thus, you can trash it and do things another way if you prefer.
  */
 void
-enter_forked_process(struct trapframe *tf)
+enter_forked_process(struct trapframe *tf, unsigned long length)
 {
-	(void)tf;
+	//kprintf("I am alive");
+	(void) length;
+	struct trapframe child_tf = *tf;
+	// not setting the tf variable in proc structure
+
+	// curproc_setas
+	child_tf.tf_epc+= 4;
+	child_tf.tf_v0 = 0;
+	child_tf.tf_a3 = 0;
+	as_activate();
+
+	mips_usermode(&child_tf);
 }

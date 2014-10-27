@@ -49,13 +49,15 @@
 #include <vnode.h>
 #include <vfs.h>
 #include <synch.h>
-#include <kern/fcntl.h>  
+#include <kern/fcntl.h>
+#include <limits.h>
 
 /*
  * The process for the kernel; this holds all the kernel-only threads.
  */
 struct proc *kproc;
-
+struct procData **proctable;
+struct lock *pid_lock;
 /*
  * Mechanism for making the kernel menu thread sleep while processes are running
  */
@@ -69,6 +71,87 @@ static struct semaphore *proc_count_mutex;
 struct semaphore *no_proc_sem;   
 #endif  // UW
 
+void
+generatePidForAdam(void){
+	lock_acquire(pid_lock);
+	proctable[0] = kmalloc(sizeof(struct procData));
+	proctable[0]->pid = 2;
+	proctable[0]->parent = 2;
+	proctable[0]->cv = cv_create("adam's cv");
+	if(proctable[0]->cv == NULL){
+		panic("Cannot create a cv for adam\n");
+	}
+	proctable[0]->exitcode = -2;
+	lock_release(pid_lock);
+}
+
+int
+generatePid(struct proc *p){
+	lock_acquire(pid_lock);
+
+	for (int i = 1; i < PID_MAX-2; ++i){
+		if(proctable[i] == NULL){
+			if(i == PID_MAX-3)
+				cleanUpPids();
+			proctable[i] = kmalloc(sizeof(struct procData));
+			proctable[i]->pid = i+2;
+			proctable[i]->parent = curproc->pid;
+			proctable[i]->cv = cv_create("cv");
+			if(proctable[i]->cv == NULL){
+				panic("Cannot create cv at procbootstrap\n");
+			}
+			proctable[i]->exitcode = -2;
+			p->pid = i+2;
+			lock_release(pid_lock);
+			return (0);
+		} else if (proctable[i]->exitcode == -3){
+			// kfree doesn't actually free kmalloc? so
+			// 		i just invalidated all the points in cleanUppids
+			// 		and set exitcode to something that I wouldn't use 
+			// 		anywhere else, -3, to tell if I have called 
+			// 		cleanUpPids
+			proctable[i]->pid = i+2;
+			proctable[i]->parent = curproc->pid;
+			proctable[i]->cv = cv_create("cv");
+			if(proctable[i]->cv == NULL){
+				panic("Cannot create cv at procbootstrap\n");
+			}
+			proctable[i]->exitcode = -2;
+			p->pid = i+2;
+			lock_release(pid_lock);
+			return (0);
+		}
+	}
+	lock_release(pid_lock);
+	return (-1);
+}
+
+struct procData *
+getProcData(pid_t p){
+	return proctable[p-2];
+}
+
+void
+cleanUpPids(void){
+	// re-use pids by checking if child and parent both have 
+	// 			exitcodes
+	for (int i = PID_MAX-3; i >= 0; i--){
+		if(proctable[i] != NULL){
+			if(proctable[i]->exitcode != -2 &&
+						proctable[proctable[i]->parent]->exitcode != -2){
+				// i think I heard that kfree doesn't actually free
+				// 		memory? so instead of just doing kfree, i 
+				// 		"nullify" somewhat the values and make
+				// 		exitcode = -3 for a special case for generatePid
+				//kfree(proctable[i]);
+				proctable[i]->pid = -1;
+				proctable[i]->parent = -1;
+				cv_destroy(proctable[i]->cv);
+				proctable[i]->exitcode = -3;
+			}
+		}
+	}
+}
 
 
 /*
@@ -99,6 +182,10 @@ proc_create(const char *name)
 	/* VFS fields */
 	proc->p_cwd = NULL;
 
+	// hardcode the first "adam" process
+	proc->pid = 2;
+
+	
 #ifdef UW
 	proc->console = NULL;
 #endif // UW
@@ -193,7 +280,9 @@ proc_destroy(struct proc *proc)
 void
 proc_bootstrap(void)
 {
-  kproc = proc_create("[kernel]");
+	// initialize pidArray
+
+	kproc = proc_create("[kernel]");
   if (kproc == NULL) {
     panic("proc_create for kproc failed\n");
   }
@@ -208,6 +297,16 @@ proc_bootstrap(void)
     panic("could not create no_proc_sem semaphore\n");
   }
 #endif // UW 
+
+  proctable = kmalloc((PID_MAX-3)*sizeof(struct procData *));
+	for (int i = 0; i < PID_MAX-3; ++i){
+		proctable[i] = NULL;
+	}
+
+	pid_lock = lock_create("pid_lock");
+	if(pid_lock == NULL){
+		panic("lock_create: unable to allocate space for pic lock\n");
+	}
 }
 
 /*

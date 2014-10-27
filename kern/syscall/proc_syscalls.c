@@ -9,6 +9,8 @@
 #include <thread.h>
 #include <addrspace.h>
 #include <copyinout.h>
+#include <synch.h>
+#include <mips/trapframe.h>
 
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
@@ -19,7 +21,10 @@ void sys__exit(int exitcode) {
   struct proc *p = curproc;
   /* for now, just include this to keep the compiler from complaining about
      an unused variable */
-  (void)exitcode;
+  lock_acquire(pid_lock);
+  getProcData(curproc->pid)->exitcode = exitcode;
+  cv_signal(getProcData(getProcData(curproc->pid)->parent)->cv, pid_lock);
+  lock_release(pid_lock);
 
   DEBUG(DB_SYSCALL,"Syscall: _exit(%d)\n",exitcode);
 
@@ -49,16 +54,6 @@ void sys__exit(int exitcode) {
 }
 
 
-/* stub handler for getpid() system call                */
-int
-sys_getpid(pid_t *retval)
-{
-  /* for now, this is just a stub that always returns a PID of 1 */
-  /* you need to fix this to make it work properly */
-  *retval = 1;
-  return(0);
-}
-
 /* stub handler for waitpid() system call                */
 
 int
@@ -69,21 +64,28 @@ sys_waitpid(pid_t pid,
 {
   int exitstatus;
   int result;
+  int childExitcode;
 
-  /* this is just a stub implementation that always reports an
-     exit status of 0, regardless of the actual exit status of
-     the specified process.   
-     In fact, this will return 0 even if the specified process
-     is still running, and even if it never existed in the first place.
-
-     Fix this!
-  */
 
   if (options != 0) {
     return(EINVAL);
   }
-  /* for now, just pretend the exitstatus is 0 */
-  exitstatus = 0;
+  // critical section
+  lock_acquire(pid_lock);
+
+  if(getProcData(pid) == NULL)
+    return(ESRCH);
+
+  if(getProcData(pid)->parent != curproc->pid)
+    return(ECHILD);
+
+  while((childExitcode = getProcData(pid)->exitcode) == -2){
+    cv_wait(getProcData(curproc->pid)->cv, pid_lock);
+  }
+  lock_release(pid_lock);
+
+  exitstatus = _MKWAIT_EXIT(childExitcode);
+
   result = copyout((void *)&exitstatus,status,sizeof(int));
   if (result) {
     return(result);
@@ -92,3 +94,63 @@ sys_waitpid(pid_t pid,
   return(0);
 }
 
+/* stub handler for getpid() system call                */
+int
+sys_getpid(pid_t *retval)
+{
+  /* for now, this is just a stub that always returns a PID of 1 */
+  /* you need to fix this to make it work properly */
+  KASSERT(curproc->pid != -1);
+  *retval = curproc->pid;
+  return(0);
+}
+
+int
+sys_fork(
+    struct trapframe *tf,
+    pid_t *retval
+  )
+{
+  int err, as_copy_err, genPidErr;
+  struct proc *child_proc;
+  struct trapframe *child_tf;
+  
+
+  child_proc = proc_create_runprogram("child_proc");
+  if(child_proc == NULL)
+    return (ENOMEM);
+  
+  child_tf = kmalloc(sizeof(struct trapframe));
+  if(child_tf == NULL){
+    return (ENOMEM);
+  }
+  memcpy(child_tf, tf, sizeof(struct trapframe));
+
+  as_copy_err = as_copy(curproc->p_addrspace, 
+        &child_proc->p_addrspace);
+  if(as_copy_err == ENOMEM){
+    proc_destroy(child_proc);
+    *retval = -1;
+    return (ENOMEM);
+  }
+
+  // special adam process case
+  if(curproc->pid == 2)
+    generatePidForAdam();
+
+  genPidErr = generatePid(child_proc);
+  if(genPidErr == -1){
+    return(ENPROC);
+  }
+
+  err = thread_fork(child_proc->p_name, child_proc, 
+      (void *)enter_forked_process,
+      child_tf,
+      (unsigned long) 1);
+  if(err){
+    proc_destroy(child_proc);
+  }
+
+  *retval = child_proc->pid;
+  return(0);
+}

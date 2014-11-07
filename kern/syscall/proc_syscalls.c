@@ -11,11 +11,118 @@
 #include <copyinout.h>
 #include <synch.h>
 #include <mips/trapframe.h>
+#include <vm.h>
+#include <vfs.h>
+#include <kern/fcntl.h>
+#include <test.h>
+#include <limits.h>
+
+int
+sys_execv(const_userptr_t prog, userptr_t* args){
+  // const char * program, char ** args
+  int err;
+
+  struct addrspace *as;
+  struct vnode *v;
+  vaddr_t entrypoint, stackptr;
+  int result;
+  int argc = 0;
+  char **argv, **kargv;
+  //char *progname;
+  //size_t len;
+
+  // copyinstr(prog, progname, PATH_MAX, &len);
+  // kprintf("hi\n");
+  // KASSERT(progname != NULL);
+  // kprintf("%s\n", progname);
+
+ // kprintf("prog is: %s\n", (char*)prog);
+  argv = kmalloc(64*sizeof(char *));
+  err = copyin((userptr_t)args, argv, 64);
+  if(err)
+    return err;
+
+  while(argv[argc] != NULL){
+    char* str = kmalloc(PATH_MAX*sizeof(char));
+    size_t len;
+    err = copyinstr((userptr_t)argv[argc], str, PATH_MAX, &len);
+    if(err)
+      return err;
+    argv[argc] = str;
+    kprintf("len: %d, %s\n", len, argv[argc]);
+    argc++;
+  }
+  kargv = kmalloc((argc+1)*sizeof(char *));
+  kargv[argc] = NULL;
+  for(int i = 0; i < argc; i++){
+    int strLength = strlen(argv[i]);
+    int roundedLen = ROUNDUP(strLength+1, 4);
+    kargv[i] = kmalloc(roundedLen*sizeof(char));
+    strcpy(kargv[i], argv[i]);
+    // pad null terminators
+    for(int j = strLength+1; j < roundedLen; j++)
+      kargv[i][j+1] = '\0';
+    kfree(argv[i]);
+  }
+  kfree(argv);
+
+  kprintf("argc is: %d\n", argc);
+  kprintf("soooooooo %s\n", kargv[0]);
+
+
+  char *fname_temp;
+  fname_temp = kstrdup((char*)prog);
+  result = vfs_open(fname_temp, O_RDONLY, 0, &v);
+  if (result) {
+    return result;
+  }
+  kfree(fname_temp);
+  as = as_create();
+  if (as ==NULL) {
+    vfs_close(v);
+    return ENOMEM;
+  }
+  curproc_setas(as);
+  as_activate();
+  result = load_elf(v, &entrypoint);
+  if (result) {
+    vfs_close(v);
+    return result;
+  }
+  vfs_close(v);
+
+  // part I have to do
+
+
+  /* Define the user stack in the address space */
+  result = as_define_stack(as, &stackptr);
+  if (result) {
+    /* p_addrspace will go away when curproc is destroyed */
+    return result;
+  }
+
+  copyout(kargv, &stackptr, (argc+1)*sizeof(char *));
+  for(int i = 0; i < argc; i++){
+    int len;
+    int strLength = ROUNDUP(strlen(kargv[i]), 4);
+    copyoutstr(kargv[i], &kargv[i], strLength, &len);
+  }
+  
+
+  /* Warp to user mode. */
+  enter_new_process(argc, kargv,
+        stackptr, entrypoint);
+  
+  /* enter_new_process does not return. */
+  panic("enter_new_process returned\n");
+  return EINVAL;
+}
 
   /* this implementation of sys__exit does not do anything with the exit code */
   /* this needs to be fixed to get exit() and waitpid() working properly */
 
-void sys__exit(int exitcode) {
+void 
+sys__exit(int exitcode) {
 
   struct addrspace *as;
   struct proc *p = curproc;
@@ -154,3 +261,5 @@ sys_fork(
   *retval = child_proc->pid;
   return(0);
 }
+
+

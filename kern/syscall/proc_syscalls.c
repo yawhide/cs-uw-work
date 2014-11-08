@@ -19,103 +19,117 @@
 
 int
 sys_execv(const_userptr_t prog, userptr_t* args){
-  // const char * program, char ** args
-  int err;
+	int err;
+	struct addrspace *as;
+	struct vnode *v;
+	vaddr_t entrypoint, stackptr;
+	int result;
+	int argc = 0;
+	char **argv;
+	int totalStringSize = 0, totalPtrSize = 0;
+	size_t proglength = 0;
+	char * progname = kmalloc(PATH_MAX*sizeof(char));
 
-  struct addrspace *as;
-  struct vnode *v;
-  vaddr_t entrypoint, stackptr;
-  int result;
-  int argc = 0;
-  char **argv, **kargv;
-  //char *progname;
-  //size_t len;
+	argv = kmalloc(64*sizeof(char *));
+	err = copyin((userptr_t)args, argv, 64);
+	if(err)	return err;
 
-  // copyinstr(prog, progname, PATH_MAX, &len);
-  // kprintf("hi\n");
-  // KASSERT(progname != NULL);
-  // kprintf("%s\n", progname);
+	while(argv[argc] != NULL){
+		char* str = kmalloc(PATH_MAX*sizeof(char));
+		size_t len;
+		err = copyinstr((const_userptr_t)argv[argc], str, PATH_MAX, &len);
+		if(err) return err;
+		argv[argc] = str;
+		totalStringSize = totalStringSize + strlen(argv[argc]) + 1;
+		argc++;
+	}
+	
+	err = copyinstr(prog, progname, PATH_MAX, &proglength);
+	if(err) return err;
+	argc++;
 
- // kprintf("prog is: %s\n", (char*)prog);
-  argv = kmalloc(64*sizeof(char *));
-  err = copyin((userptr_t)args, argv, 64);
-  if(err)
-    return err;
+	totalStringSize = ROUNDUP(totalStringSize+strlen(progname) +1, 8);
+	totalPtrSize = ROUNDUP((argc+1)*4, 8);
+	//kprintf("sizes for stack: %d, %d\n", totalStringSize, totalPtrSize);
+	//kprintf("progname: %s %d, argc:%d\n", progname, strlen(progname), (int)argc);
 
-  while(argv[argc] != NULL){
-    char* str = kmalloc(PATH_MAX*sizeof(char));
-    size_t len;
-    err = copyinstr((userptr_t)argv[argc], str, PATH_MAX, &len);
-    if(err)
-      return err;
-    argv[argc] = str;
-    kprintf("len: %d, %s\n", len, argv[argc]);
-    argc++;
-  }
-  kargv = kmalloc((argc+1)*sizeof(char *));
-  kargv[argc] = NULL;
-  for(int i = 0; i < argc; i++){
-    int strLength = strlen(argv[i]);
-    int roundedLen = ROUNDUP(strLength+1, 4);
-    kargv[i] = kmalloc(roundedLen*sizeof(char));
-    strcpy(kargv[i], argv[i]);
-    // pad null terminators
-    for(int j = strLength+1; j < roundedLen; j++)
-      kargv[i][j+1] = '\0';
-    kfree(argv[i]);
-  }
-  kfree(argv);
+	result = vfs_open(progname, O_RDONLY, 0, &v);
+	if (result) {
+		return result;
+	}
+	as = as_create();
+	if (as == NULL) {
+		vfs_close(v);
+		return ENOMEM;
+	}
+	curproc_setas(as);
+	as_activate();
+	result = load_elf(v, &entrypoint);
+	if (result) {
+		vfs_close(v);
+		return result;
+	}
+	vfs_close(v);
 
-  kprintf("argc is: %d\n", argc);
-  kprintf("soooooooo %s\n", kargv[0]);
+/* Define the user stack in the address space */
+	result = as_define_stack(as, &stackptr);
+	if (result) {
+/* p_addrspace will go away when curproc is destroyed */
+		return result;
+	}
 
+	int acc = 0;
+	vaddr_t *stringAddrs = kmalloc((argc+1) * sizeof(vaddr_t));
+	vaddr_t stackaddr = stackptr;
 
-  char *fname_temp;
-  fname_temp = kstrdup((char*)prog);
-  result = vfs_open(fname_temp, O_RDONLY, 0, &v);
-  if (result) {
-    return result;
-  }
-  kfree(fname_temp);
-  as = as_create();
-  if (as ==NULL) {
-    vfs_close(v);
-    return ENOMEM;
-  }
-  curproc_setas(as);
-  as_activate();
-  result = load_elf(v, &entrypoint);
-  if (result) {
-    vfs_close(v);
-    return result;
-  }
-  vfs_close(v);
+	stackaddr = stackptr - totalStringSize;
 
-  // part I have to do
+	for (int i = 0; i < argc; ++i){
+		size_t len;
+		if(i == 0){
+			err = copyoutstr(progname, (userptr_t)stackaddr, strlen(progname)+1, &len);
+			if(err) return err;
+			stackaddr += (strlen(progname) + 1);
+		} else {
+			err = copyoutstr(argv[i-1], (userptr_t)stackaddr, strlen(argv[i-1])+1, &len);
+			if(err) return err;
+			stackaddr += (strlen(argv[i-1])+1);
+		}
+	}
+	stackaddr = stackptr - totalStringSize;
 
+	for(int i = 0; i < argc+1; i++){
+		if(i == argc){
+			stringAddrs[i] = (vaddr_t)NULL;
+		} else {
+			stringAddrs[i] = stackaddr + acc;
+			if(i == 0)
+				acc = acc + strlen(progname) + 1;
+			else
+				acc = acc + strlen(argv[i-1]) +1;
+		}
+	}
 
-  /* Define the user stack in the address space */
-  result = as_define_stack(as, &stackptr);
-  if (result) {
-    /* p_addrspace will go away when curproc is destroyed */
-    return result;
-  }
+	stackaddr = stackptr - totalStringSize - totalPtrSize;
+	for (int i = 0; i < argc+1; i++){
+		err = copyout(&stringAddrs[i], (userptr_t)stackaddr, sizeof(vaddr_t));
+		if(err) return err;
+		stackaddr += 4;
+	}
 
-  copyout(kargv, &stackptr, (argc+1)*sizeof(char *));
-  for(int i = 0; i < argc; i++){
-    int len;
-    int strLength = ROUNDUP(strlen(kargv[i]), 4);
-    copyoutstr(kargv[i], &kargv[i], strLength, &len);
-  }
-  
+	stackaddr = stackptr - totalStringSize;
+	stackptr = stackptr - totalStringSize - totalPtrSize;
 
-  /* Warp to user mode. */
-  enter_new_process(argc, kargv,
-        stackptr, entrypoint);
-  
-  /* enter_new_process does not return. */
-  panic("enter_new_process returned\n");
-  return EINVAL;
+//curproc_setas(NULL);
+
+/* Warp to user mode. */
+	//kprintf("argc: %d, stackaddr: %p, stackptr: %p\n", (int)argc, (void *)stackaddr, (void *)stackptr);
+
+	enter_new_process(argc+1, (userptr_t)stackptr, stackptr, entrypoint);
+
+/* enter_new_process does not return. */
+	panic("enter_new_process returned\n");
+	return EINVAL;
 }
 
   /* this implementation of sys__exit does not do anything with the exit code */
